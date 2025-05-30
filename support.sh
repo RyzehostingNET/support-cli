@@ -80,6 +80,16 @@ fi
 PRIVATE_KEY_CONTENT=$(cat "${SSH_KEY_PATH}")
 PUBLIC_KEY_CONTENT=$(cat "${SSH_KEY_PATH}.pub")
 
+# Save private key to a known location for SCP
+SAVED_PRIVATE_KEY_ON_SERVER="/tmp/temp_support_key_for_${USERNAME}.pem"
+cp "${SSH_KEY_PATH}" "$SAVED_PRIVATE_KEY_ON_SERVER"
+chmod 600 "$SAVED_PRIVATE_KEY_ON_SERVER" # Should already be from ssh-keygen but ensure
+echo ""
+echo "For easier transfer, the private key has also been saved on the server at:"
+echo "  $SAVED_PRIVATE_KEY_ON_SERVER"
+echo "You can SCP it to your local machine. It will be deleted when this script exits if not moved."
+echo ""
+
 # --- Setup SSH Access for the User ---
 echo "Setting up SSH access for $USERNAME..."
 USER_SSH_DIR="$USER_HOME_DIR/.ssh"
