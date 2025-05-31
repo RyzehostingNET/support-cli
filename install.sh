@@ -1,13 +1,16 @@
 #!/bin/bash
 
-# Installer for Ryzehosting Support Tool
-# Assumes DISCORD_WEBHOOK_URL is pre-configured by Ryzehosting provisioning
-# Attempts to automatically install dependencies and fetches other scripts from GitHub.
+# Installer for Ryzehosting Support Tool (Cron-Based Monitoring)
 
-# --- Constants for GitHub paths ---
+# --- GitHub Raw URL Base ---
 GITHUB_RAW_BASE_URL="https://raw.githubusercontent.com/RyzehostingNET/support-cli/main"
-SUPPORT_SCRIPT_GH_PATH="support.sh"
-CLEANUP_SCRIPT_GH_PATH="ryze-support-cleanup.sh"
+
+# --- Configuration (Paths) ---
+SUPPORT_SCRIPT_DEST="/usr/local/bin/support"
+MONITOR_SCRIPT_DEST="/usr/local/sbin/ryze-support-monitor.sh"
+STATE_FILE_DIR="/var/lib/ryze-support-tool"
+CRON_FILE_NAME="ryze-support-monitor"
+CRON_FILE_DEST="/etc/cron.d/$CRON_FILE_NAME"
 
 # --- Script Execution Guard ---
 if [[ $EUID -ne 0 ]]; then
@@ -15,23 +18,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-echo "Ryzehosting Support Tool Installer"
-echo "----------------------------------"
-
-# --- Configuration (Paths) ---
-CONFIG_DIR="/etc/ryze-support-tool"
-CONFIG_FILE="$CONFIG_DIR/config"
-SUPPORT_SCRIPT_DEST="/usr/local/bin/support"
-CLEANUP_SCRIPT_DEST="/usr/local/sbin/ryze-support-cleanup.sh"
-PAM_SSHD_CONF="/etc/pam.d/sshd" # Or common-session for wider coverage
-PAM_LINE_ADVANCED="session    optional    pam_script.so    script=$CLEANUP_SCRIPT_DEST"
+echo "Ryzehosting Support Tool Installer (Cron-Based)"
+echo "----------------------------------------------"
 
 # --- OS Detection & Package Manager ---
 OS_ID=""
-PKG_MANAGER=""
+PKG_MANAGER_CMD=""
 UPDATE_CMD=""
-INSTALL_CMD=""
-LDCONFIG_CMD="ldconfig" # Default ldconfig command
+INSTALL_CMD_PREFIX="" # For apt-get, yum, dnf
 
 if [ -f /etc/os-release ]; then
     . /etc/os-release
@@ -40,35 +34,29 @@ fi
 
 case "$OS_ID" in
     ubuntu|debian)
-        PKG_MANAGER="apt-get"
+        PKG_MANAGER_CMD="apt-get"
         UPDATE_CMD="apt-get update -qq"
-        INSTALL_CMD="apt-get install -y -qq"
-        PAM_SCRIPT_PKG="libpam-script"
+        INSTALL_CMD_PREFIX="apt-get install -y -qq"
         ;;
     centos|rhel|fedora|almalinux|rocky)
         if command -v dnf >/dev/null 2>&1; then
-            PKG_MANAGER="dnf"
-            UPDATE_CMD=":"
-            INSTALL_CMD="dnf install -y -q"
+            PKG_MANAGER_CMD="dnf"
+            UPDATE_CMD=":" # dnf usually doesn't require explicit separate update
+            INSTALL_CMD_PREFIX="dnf install -y -q"
         elif command -v yum >/dev/null 2>&1; then
-            PKG_MANAGER="yum"
+            PKG_MANAGER_CMD="yum"
             UPDATE_CMD=":"
-            INSTALL_CMD="yum install -y -q"
+            INSTALL_CMD_PREFIX="yum install -y -q"
         else
-            echo "ERROR: Neither dnf nor yum found on this $OS_ID system. Cannot manage packages."
+            echo "ERROR: Neither dnf nor yum found. Cannot manage packages."
             exit 1
         fi
-        PAM_SCRIPT_PKG="pam_script"
         ;;
     *)
         echo "ERROR: Unsupported OS: $OS_ID. Cannot automatically install dependencies."
-        echo "Please ensure curl, jq (optional), and pam_script.so are installed manually."
         read -p "Continue installation without automatic dependency management? (y/N): " choice
         [[ "$choice" =~ ^[Yy]$ ]] || exit 1
-        PKG_MANAGER="manual"
-        UPDATE_CMD=":"
-        INSTALL_CMD=":"
-        PAM_SCRIPT_PKG="manual"
+        PKG_MANAGER_CMD="manual" # Will skip installs
         ;;
 esac
 
@@ -77,190 +65,106 @@ install_if_missing() {
     local cmd_to_check="$1"
     local package_name="$2"
     local human_name="${3:-$package_name}"
-    local is_file_check="${4:-false}" # New parameter to indicate if checking for a file
 
-    if [ "$is_file_check" = "true" ]; then
-        if [ -f "$cmd_to_check" ]; then # cmd_to_check is actually a file path here
-            echo "$human_name (file: $cmd_to_check) found."
-            return 0
-        fi
-    elif command -v "$cmd_to_check" >/dev/null 2>&1; then
+    if command -v "$cmd_to_check" >/dev/null 2>&1; then
         echo "$human_name (command: $cmd_to_check) is already installed."
         return 0
     fi
 
-    if [ "$PKG_MANAGER" == "manual" ]; then
-        echo "WARNING: Cannot automatically install $human_name. Please ensure it is installed/present."
-        return 1
+    if [ "$PKG_MANAGER_CMD" == "manual" ]; then
+        echo "WARNING: Cannot automatically install $human_name. Please ensure it is installed."
+        return 1 # Indicate potential issue
     fi
 
     echo "$human_name not found. Attempting to install $package_name..."
-    # Run update once logic moved before the first actual install attempt in the main flow
-    if $INSTALL_CMD "$package_name"; then
+    # Run update_cmd only if it's not a no-op (i.e., for apt-get first time)
+    if [ "$UPDATE_CMD" != ":" ]; then
+        echo "Updating package lists ($PKG_MANAGER_CMD update)..."
+        $UPDATE_CMD || { echo "ERROR: Failed to update package lists."; exit 1; }
+        UPDATE_CMD=":" # Ensure update runs only once
+    fi
+
+    if $INSTALL_CMD_PREFIX "$package_name"; then
         echo "$package_name installed successfully."
-        # If it's a library, try running ldconfig
-        if [[ "$package_name" == "$PAM_SCRIPT_PKG" ]] && command -v $LDCONFIG_CMD >/dev/null 2>&1; then
-            echo "Running $LDCONFIG_CMD to update library cache..."
-            $LDCONFIG_CMD
-        fi
         return 0
     else
-        echo "ERROR: Failed to install $package_name. Please install it manually and re-run the installer."
+        echo "ERROR: Failed to install $package_name. Please install it manually and re-run."
         exit 1
     fi
 }
 
 # --- Check & Install Dependencies ---
 echo "Checking and installing dependencies..."
-
-# Run update command once before any installations if applicable
-if [[ "$PKG_MANAGER" == "apt-get" ]]; then
-    echo "Updating package lists ($PKG_MANAGER update)..."
-    $UPDATE_CMD || { echo "ERROR: Failed to update package lists. Please check your network and repository configuration."; exit 1; }
-fi
-
-install_if_missing "curl" "curl" "cURL"
+install_if_missing "curl" "curl" "cURL" # Used by support.sh to send to Discord
+install_if_missing "flock" "util-linux" "flock (from util-linux)" # For script locking
+# jq is optional in support.sh, but good to have for robust Discord JSON
 install_if_missing "jq" "jq" "jq (JSON processor)"
+echo "Dependencies met or installation attempted."
 
-# Check for pam_script.so
-# Standard paths for pam_script.so, can be expanded
-PAM_SCRIPT_SO_PATHS=(
-    "/lib/x86_64-linux-gnu/security/pam_script.so"
-    "/usr/lib/x86_64-linux-gnu/security/pam_script.so"
-    "/lib64/security/pam_script.so"
-    "/usr/lib64/security/pam_script.so"
-    "/lib/security/pam_script.so" # Generic fallback
-    "/usr/lib/security/pam_script.so" # Generic fallback
-)
-PAM_SCRIPT_SO_FOUND_PATH=""
-
-check_pam_script_so() {
-    for p_path in "${PAM_SCRIPT_SO_PATHS[@]}"; do
-        if [ -f "$p_path" ]; then
-            PAM_SCRIPT_SO_FOUND_PATH="$p_path"
-            echo "pam_script.so found at $PAM_SCRIPT_SO_FOUND_PATH."
-            return 0
-        fi
-    done
-    # Fallback to find, though it might be slow or not work immediately
-    local find_path
-    find_path=$(find /lib* /usr/lib* -name 'pam_script.so' -print -quit 2>/dev/null)
-    if [ -n "$find_path" ] && [ -f "$find_path" ]; then
-        PAM_SCRIPT_SO_FOUND_PATH="$find_path"
-        echo "pam_script.so found via find at $PAM_SCRIPT_SO_FOUND_PATH."
-        return 0
-    fi
-    return 1
-}
-
-if check_pam_script_so; then
-    : # Already found
-else
-    echo "pam_script.so module not found initially."
-    if [ "$PKG_MANAGER" != "manual" ] && [ -n "$PAM_SCRIPT_PKG" ]; then
-        echo "Attempting to install $PAM_SCRIPT_PKG package..."
-        # install_if_missing will handle the actual install command
-        install_if_missing "pam_script.so" "$PAM_SCRIPT_PKG" "PAM Script Module ($PAM_SCRIPT_PKG)" true # true indicates file check
-        # Re-check after install attempt
-        sleep 1 # Give a moment for filesystem changes
-        if command -v $LDCONFIG_CMD >/dev/null 2>&1; then $LDCONFIG_CMD; fi # Run ldconfig again
-        
-        if check_pam_script_so; then
-            echo "pam_script.so successfully located after installation of $PAM_SCRIPT_PKG."
-        else
-            echo "ERROR: Installed $PAM_SCRIPT_PKG but pam_script.so still not found in common locations."
-            echo "Checked paths: ${PAM_SCRIPT_SO_PATHS[*]}"
-            echo "Please verify the installation of $PAM_SCRIPT_PKG and the location of pam_script.so."
-            exit 1
-        fi
-    else
-        echo "ERROR: Cannot automatically install package for pam_script.so. Please install it manually."
-        exit 1
-    fi
-fi
-echo "All required dependencies seem to be met."
-
-
-# --- Verify Ryzehosting Pre-configuration ---
-echo "Verifying Ryzehosting pre-configuration..."
-if [ ! -d "$CONFIG_DIR" ]; then
-    echo "ERROR: Configuration directory $CONFIG_DIR not found."
-    echo "This tool expects Ryzehosting to pre-configure it during server provisioning."
-    echo "Please contact Ryzehosting support regarding this issue."
-    exit 1
-fi
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "ERROR: Configuration file $CONFIG_FILE not found."
-    echo "This tool expects Ryzehosting to pre-configure it with the Discord webhook URL."
-    echo "Please contact Ryzehosting support regarding this issue."
-    exit 1
-fi
-DISCORD_WEBHOOK_URL=""
-source "$CONFIG_FILE"
-if [ -z "$DISCORD_WEBHOOK_URL" ] || [[ ! "$DISCORD_WEBHOOK_URL" == https://discord.com/api/webhooks/* ]]; then
-    echo "ERROR: DISCORD_WEBHOOK_URL is not correctly set or is missing in $CONFIG_FILE."
-    echo "Please contact Ryzehosting support."
-    exit 1
-fi
-echo "Discord Webhook URL found and seems valid in pre-configuration."
-chmod 0700 "$CONFIG_DIR" &>/dev/null
-chmod 0600 "$CONFIG_FILE" &>/dev/null
-echo "Ensured $CONFIG_FILE permissions are secure."
+# --- Create State Directory ---
+echo "Creating state directory $STATE_FILE_DIR..."
+mkdir -p "$STATE_FILE_DIR"
+chmod 0700 "$STATE_FILE_DIR" # Accessible only by root
+# The lock file and state file will be created by the scripts when first needed.
+echo "State directory created."
 
 # --- Fetch and Install Scripts ---
-echo "Fetching support scripts from GitHub..."
-
-# Fetch support.sh
+echo "Fetching and installing scripts..."
+# support.sh
 echo "Downloading main support script to $SUPPORT_SCRIPT_DEST..."
-if curl -sSL "${GITHUB_RAW_BASE_URL}/${SUPPORT_SCRIPT_GH_PATH}" -o "$SUPPORT_SCRIPT_DEST"; then
+if curl -sSL "${GITHUB_RAW_BASE_URL}/support.sh" -o "$SUPPORT_SCRIPT_DEST"; then
     chmod +x "$SUPPORT_SCRIPT_DEST"
-    echo "Main support script downloaded and made executable."
+    echo "Main support script installed."
 else
-    echo "ERROR: Failed to download ${GITHUB_RAW_BASE_URL}/${SUPPORT_SCRIPT_GH_PATH}"
+    echo "ERROR: Failed to download main support script from GitHub."
     exit 1
 fi
 
-# Fetch ryze-support-cleanup.sh
-echo "Downloading cleanup script to $CLEANUP_SCRIPT_DEST..."
-if curl -sSL "${GITHUB_RAW_BASE_URL}/${CLEANUP_SCRIPT_GH_PATH}" -o "$CLEANUP_SCRIPT_DEST"; then
-    chmod +x "$CLEANUP_SCRIPT_DEST"
-    echo "Cleanup script downloaded and made executable."
+# ryze-support-monitor.sh
+echo "Downloading monitor script to $MONITOR_SCRIPT_DEST..."
+if curl -sSL "${GITHUB_RAW_BASE_URL}/ryze-support-monitor.sh" -o "$MONITOR_SCRIPT_DEST"; then
+    chmod +x "$MONITOR_SCRIPT_DEST"
+    echo "Monitor script installed."
 else
-    echo "ERROR: Failed to download ${GITHUB_RAW_BASE_URL}/${CLEANUP_SCRIPT_GH_PATH}"
-    # Attempt to clean up the main support script if its download was successful but cleanup failed
-    rm -f "$SUPPORT_SCRIPT_DEST"
+    echo "ERROR: Failed to download monitor script from GitHub."
+    rm -f "$SUPPORT_SCRIPT_DEST" # Clean up if main script was downloaded
     exit 1
 fi
 
-# --- Configure PAM ---
-echo "Configuring PAM for automatic cleanup..."
-if [ ! -f "$PAM_SSHD_CONF" ]; then
-    echo "WARNING: $PAM_SSHD_CONF not found. Cannot configure PAM automatically."
-    echo "You may need to manually add the following line to your SSHD PAM configuration:"
-    echo "$PAM_LINE_ADVANCED"
+# --- Setup Cron Job ---
+echo "Setting up cron job for the monitor script..."
+CRON_JOB_CONTENT="SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+# Ryzehosting Support User Monitor - runs every minute
+*/1 * * * * root $MONITOR_SCRIPT_DEST >> /var/log/ryze-support-monitor-cron.log 2>&1
+"
+# Piping to tee as root to write the file
+echo "$CRON_JOB_CONTENT" | sudo tee "$CRON_FILE_DEST" > /dev/null
+if [ $? -eq 0 ]; then
+    chmod 0644 "$CRON_FILE_DEST" # Standard cron file permissions
+    echo "Cron job created at $CRON_FILE_DEST."
+    echo "The monitor will start running within the next minute."
 else
-    if grep -qE "pam_script\.so.*script=$CLEANUP_SCRIPT_DEST" "$PAM_SSHD_CONF"; then
-        echo "PAM already configured for $CLEANUP_SCRIPT_DEST."
-    else
-        if [ -n "$(tail -c1 "$PAM_SSHD_CONF")" ]; then echo >> "$PAM_SSHD_CONF"; fi
-        echo "$PAM_LINE_ADVANCED" >> "$PAM_SSHD_CONF"
-        echo "Added pam_script configuration to $PAM_SSHD_CONF."
-        echo "IMPORTANT: Review $PAM_SSHD_CONF to ensure the line is correctly placed if issues arise."
-    fi
+    echo "ERROR: Failed to create cron job file $CRON_FILE_DEST."
+    echo "Please create it manually with the following content:"
+    echo "---------------------------------------------------"
+    echo "$CRON_JOB_CONTENT"
+    echo "---------------------------------------------------"
+    # Clean up downloaded scripts if cron setup fails, as tool won't be fully functional
+    rm -f "$SUPPORT_SCRIPT_DEST" "$MONITOR_SCRIPT_DEST"
+    exit 1
 fi
 
 # --- Final Instructions ---
 echo ""
 echo "Installation Complete!"
 echo "------------------------"
-echo "The Ryzehosting Support Tool is now installed."
-echo "To create a temporary support account, run as root/sudo:"
-echo "  sudo support"
+echo "The Ryzehosting Support Tool (Cron-Based) is now installed."
+echo "The main command is 'sudo support'."
+echo "Temporary users will be monitored and cleaned up by a cron job running every minute."
+echo "Logs for the monitor script: /var/log/ryze-support-monitor.log"
+echo "Logs for the cron job itself: /var/log/ryze-support-monitor-cron.log"
 echo ""
-echo "The temporary account will be automatically deleted upon logout by the support user."
-echo "Review the cleanup script log at /var/log/ryze-support-cleanup.log periodically for audit."
-echo ""
-echo "To uninstall, run the ./uninstall.sh script (also available from ${GITHUB_RAW_BASE_URL}/uninstall.sh):"
-echo "  bash <(curl -sSL ${GITHUB_RAW_BASE_URL}/uninstall.sh)"
-
+echo "To uninstall, run the uninstall.sh script from GitHub:"
+echo "  sudo bash <(curl -sSL ${GITHUB_RAW_BASE_URL}/uninstall.sh)"
 exit 0
