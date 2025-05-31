@@ -162,8 +162,9 @@ echo "IMPORTANT: The private key above grants access. Handle it securely."
 if [ "$DISCORD_WEBHOOK_URL" != "NONE" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
     ADMIN_USER="${SUDO_USER:-$(whoami)}" # User who ran the script
-    DISCORD_BOT_NAME="Ryzehosting Support Bot"
+    DISCORD_BOT_NAME="Ryzehosting Support Bot" # Make sure this is consistently set
     DISCORD_AVATAR_URL="https://i.imgur.com/G6k9Y94.png" # Replace with your Ryzehosting logo
+    CURRENT_DATE_FOR_FOOTER=$(date) # Expand date here
 
     JSON_PAYLOAD=$(cat <<EOF
     {
@@ -181,7 +182,7 @@ if [ "$DISCORD_WEBHOOK_URL" != "NONE" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
           {"name": "Status", "value": "Active - Awaiting logout/timeout for deletion", "inline": true}
         ],
         "footer": {
-          "text": "Ryzehosting Support System - $(date)"
+          "text": "Ryzehosting Support System - $CURRENT_DATE_FOR_FOOTER"
         },
         "timestamp": "$TIMESTAMP"
       }]
