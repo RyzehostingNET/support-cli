@@ -149,9 +149,9 @@ echo "IMPORTANT: The private key above grants access. Handle it securely."
 if [ "$DISCORD_WEBHOOK_URL" != "NONE" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
     TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%S.000Z")
     ADMIN_USER="${SUDO_USER:-$(whoami)}"
-    DISCORD_BOT_NAME="Ryzehosting Support Bot" # Ensure this is defined as a simple string
-    DISCORD_AVATAR_URL="https://i.imgur.com/G6k9Y94.png" # Example, replace if needed
-    CURRENT_DATE_FOR_FOOTER=$(date) # Expand date here
+    DISCORD_BOT_NAME="Ryzehosting Support Bot"
+    DISCORD_AVATAR_URL="https://i.imgur.com/G6k9Y94.png" # Replace if needed
+    CURRENT_DATE_FOR_FOOTER=$(date)
 
     JSON_PAYLOAD=$(cat <<EOF
     {
@@ -177,23 +177,13 @@ if [ "$DISCORD_WEBHOOK_URL" != "NONE" ] && [ -n "$DISCORD_WEBHOOK_URL" ]; then
 EOF
     )
 
-    echo "--- DEBUG: Raw JSON_PAYLOAD before processing ---" >&2
-    echo "$JSON_PAYLOAD" >&2
-    echo "--- END DEBUG RAW JSON ---" >&2
-
     curl_args=(-s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -X POST)
 
     if command -v jq &> /dev/null; then
         PROCESSED_JSON_FOR_DISCORD=$(echo "$JSON_PAYLOAD" | jq -c .)
-        echo "--- DEBUG: JSON processed by jq for Discord ---" >&2
-        echo "$PROCESSED_JSON_FOR_DISCORD" >&2
-        echo "--- END DEBUG JQ JSON ---" >&2
         RESPONSE_CODE=$(curl "${curl_args[@]}" -d "$PROCESSED_JSON_FOR_DISCORD" "$DISCORD_WEBHOOK_URL")
     else
-        echo "--- DEBUG: Fallback JSON processing (no jq) ---" >&2
-        COMPACT_JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | tr -d '\n' | sed 's/  //g') # Basic compaction
-        echo "$COMPACT_JSON_PAYLOAD" >&2
-        echo "--- END DEBUG FALLBACK JSON ---" >&2
+        COMPACT_JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | tr -d '\n' | sed 's/  //g')
         RESPONSE_CODE=$(curl "${curl_args[@]}" -d "$COMPACT_JSON_PAYLOAD" "$DISCORD_WEBHOOK_URL")
     fi
 
@@ -205,9 +195,5 @@ EOF
 else
     echo "Skipping Discord notification as no valid webhook URL was provided."
 fi
-
-trap - EXIT # Clear the trap if we successfully exit, so temp dir is not removed if we wanted to inspect it
-# Actually, the trap 'rm -rf "$KEY_TEMP_DIR"' EXIT should remain to always clean up.
-# If you need to inspect, you'd comment out the trap temporarily.
 
 exit 0
