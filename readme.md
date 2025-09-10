@@ -38,3 +38,11 @@ or if the other one isn't working:
 ```bash
 curl -sSL https://raw.githubusercontent.com/RyzehostingNET/support-cli/main/install.sh | sudo bash
 ```
+
+## Uninstall
+
+```bash
+curl -O https://raw.githubusercontent.com/RyzehostingNET/support-cli/main/uninstall.sh
+chmod +x uninstall.sh
+sudo ./uninstall.sh
+```
