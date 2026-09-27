@@ -46,3 +46,8 @@ curl -O https://raw.githubusercontent.com/RyzehostingNET/support-cli/main/uninst
 chmod +x uninstall.sh
 sudo ./uninstall.sh
 ```
+
+---
+## 🛡️ Maintained by Ryzehosting
+Developed and actively maintained by the team at **[Ryzehosting.com](https://ryzehosting.com)**.  
+Looking for a high-performance Linux VPS with strong AMD single-core power, NVMe storage, and 4+ Tbps DDoS defense? Check out our **[KVM vServer Hosting](https://ryzehosting.com/vserver)**.
